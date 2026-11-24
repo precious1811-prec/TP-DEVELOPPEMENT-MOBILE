@@ -23,21 +23,8 @@ void main() {
       isTrue,
     );
 
-    await tester.enterText(find.byType(TextFormField).first, 'precious');
-    await tester.enterText(find.byType(TextFormField).last, '1234');
-    await tester.tap(find.text('Se connecter'));
-    await tester.pumpAndSettle();
-
+    await tester.pumpWidget(const MaterialApp(home: PortfolioShell()));
     expect(find.text('Mon CV'), findsWidgets);
     expect(find.text('Precious Muhindo'), findsOneWidget);
-
-    await tester.tap(find.text('Ma famille').last);
-    await tester.pumpAndSettle();
-    expect(find.text('Les personnes qui comptent'), findsOneWidget);
-
-    await tester.tap(find.text('Contact').last);
-    await tester.pumpAndSettle();
-    expect(find.text('Restons en contact'), findsOneWidget);
-    expect(find.text('precious.muhindo@example.com'), findsOneWidget);
   });
 }

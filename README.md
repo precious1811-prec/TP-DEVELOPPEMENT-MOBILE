@@ -21,7 +21,8 @@ centres d’intérêt sont également présentés dans l’application.
 
 ## Fonctionnalités
 
-- Écran de connexion de démonstration avec validation des champs.
+- Authentification réelle via l’API : inscription et connexion avec email/mot de passe.
+- Gestion dynamique des membres de famille : consultation, ajout, modification et suppression via l’API.
 - Page **Mon CV** : profil, formation, projets, compétences, langues et intérêts.
 - Page **Ma famille** : cartes de présentation des membres de la famille.
 - Page **Contact** : actions pour appeler, envoyer un e-mail, copier l’adresse
@@ -29,18 +30,18 @@ centres d’intérêt sont également présentés dans l’application.
 - Navigation par menu latéral et barre de navigation inférieure.
 - Mise en page responsive et composants réutilisables.
 
-### Connexion de démonstration
+### Authentification et API
 
-L’écran de connexion utilise des identifiants codés directement dans
-l’application :
+L’écran de connexion utilise les endpoints `/accounts/login` et
+`/accounts/register` de l’API `api-test`. Créez un compte depuis l’application
+avant de vous connecter.
 
-| Champ | Valeur |
-|---|---|
-| Identifiant | `precious` |
-| Mot de passe | `1234` |
+Par défaut, l’application utilise `http://localhost/api-test/public`.
+Pour Android Emulator, lancez le projet avec :
 
-Cette connexion sert uniquement à la démonstration : elle ne constitue pas un
-système d’authentification sécurisé.
+```bash
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2/api-test/public
+```
 
 ## Technologies
 
@@ -116,6 +117,14 @@ Captures disponibles séparément :
 - [Capture 3](<./Screenshot 2026-11-20 090227.png>)
 - [Capture 4](<./Screenshot 2026-11-20 090333.png>)
 - [Capture 5](<./Screenshot 2026-11-20 090351.png>)
+
+## Démonstration vidéo
+
+<video src="./Screen Recording 2026-11-24 101646.mp4" controls width="720">
+  Votre navigateur ne prend pas en charge la lecture vidéo intégrée.
+</video>
+
+[Télécharger ou ouvrir la vidéo](<./Screen Recording 2026-11-24 101646.mp4>)
 
 ## Personnalisation
 

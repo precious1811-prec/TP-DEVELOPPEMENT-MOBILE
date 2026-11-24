@@ -1,13 +1,85 @@
 import 'dart:ui';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 const _ink = Color(0xFF202638);
 const _muted = Color(0xFF737C91);
 const _blue = Color(0xFF6579E8);
 const _violet = Color(0xFF9B76D8);
+const _apiBaseUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'http://localhost/api-test/public',
+);
+
+class ApiException implements Exception {
+  ApiException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+Future<Map<String, dynamic>> apiRequest(
+  String method,
+  String path, {
+  Map<String, dynamic>? body,
+}) async {
+  final uri = Uri.parse('$_apiBaseUrl$path');
+  final headers = {'Accept': 'application/json'};
+  http.Response response;
+
+  if (body != null) headers['Content-Type'] = 'application/json';
+
+  if (method == 'POST') {
+    response = await http
+        .post(
+          uri,
+          headers: headers,
+          body: body == null ? null : jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+  } else if (method == 'PUT') {
+    response = await http
+        .put(
+          uri,
+          headers: headers,
+          body: body == null ? null : jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+  } else if (method == 'DELETE') {
+    response = await http
+        .delete(uri, headers: headers)
+        .timeout(const Duration(seconds: 15));
+  } else {
+    response = await http
+        .get(uri, headers: headers)
+        .timeout(const Duration(seconds: 15));
+  }
+
+  Map<String, dynamic> decoded;
+  try {
+    decoded = jsonDecode(response.body) as Map<String, dynamic>;
+  } catch (_) {
+    throw ApiException('Réponse invalide du serveur (${response.statusCode}).');
+  }
+
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    final errors = decoded['errors'];
+    if (errors is Map && errors.isNotEmpty) {
+      throw ApiException(errors.values.first.toString());
+    }
+    throw ApiException(
+      decoded['message']?.toString() ??
+          'Erreur serveur (${response.statusCode}).',
+    );
+  }
+
+  return decoded;
+}
 
 void main() {
   runApp(const CvApp());
@@ -67,6 +139,8 @@ class _LoginPageState extends State<LoginPage> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _hidePassword = true;
+  bool _isLoading = false;
+  bool _isRegistering = false;
   String? _errorMessage;
 
   @override
@@ -76,21 +150,52 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  void _signIn() {
+  Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
 
-    final username = _usernameController.text.trim().toLowerCase();
-    final password = _passwordController.text;
-    if (username == 'precious' && password == '1234') {
+    try {
+      final result = await apiRequest(
+        'POST',
+        _isRegistering ? '/accounts/register' : '/accounts/login',
+        body: {
+          'email': _usernameController.text.trim(),
+          'password': _passwordController.text,
+        },
+      );
+      if (!mounted) return;
+
+      if (_isRegistering) {
+        setState(() {
+          _isRegistering = false;
+          _errorMessage = null;
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result['message']?.toString() ?? 'Compte créé.'),
+          ),
+        );
+        return;
+      }
+
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(builder: (_) => const PortfolioShell()),
       );
-      return;
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error is ApiException
+            ? error.message
+            : 'Impossible de joindre le serveur. Vérifiez votre connexion.';
+      });
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-
-    setState(() {
-      _errorMessage = 'Identifiant ou mot de passe incorrect.';
-    });
   }
 
   @override
@@ -131,19 +236,22 @@ class _LoginPageState extends State<LoginPage> {
                               style: TextStyle(color: _muted, height: 1.5),
                             ),
                             const SizedBox(height: 28),
-                            const _FieldLabel('Identifiant'),
+                            const _FieldLabel('Adresse email'),
                             const SizedBox(height: 9),
                             TextFormField(
                               controller: _usernameController,
                               textInputAction: TextInputAction.next,
                               autofillHints: const [AutofillHints.username],
+                              keyboardType: TextInputType.emailAddress,
                               decoration: _inputDecoration(
-                                hint: 'Votre identifiant',
-                                icon: Icons.person_outline_rounded,
+                                hint: 'votre@email.com',
+                                icon: Icons.email_outlined,
                               ),
                               validator: (value) =>
                                   value == null || value.trim().isEmpty
-                                  ? 'Veuillez saisir votre identifiant.'
+                                  ? 'Veuillez saisir votre adresse email.'
+                                  : !value.trim().contains('@')
+                                  ? 'Veuillez saisir une adresse email valide.'
                                   : null,
                             ),
                             const SizedBox(height: 19),
@@ -154,7 +262,7 @@ class _LoginPageState extends State<LoginPage> {
                               obscureText: _hidePassword,
                               textInputAction: TextInputAction.done,
                               autofillHints: const [AutofillHints.password],
-                              onFieldSubmitted: (_) => _signIn(),
+                              onFieldSubmitted: (_) => _submit(),
                               decoration:
                                   _inputDecoration(
                                     hint: 'Votre mot de passe',
@@ -179,6 +287,8 @@ class _LoginPageState extends State<LoginPage> {
                               validator: (value) =>
                                   value == null || value.isEmpty
                                   ? 'Veuillez saisir votre mot de passe.'
+                                  : value.length < 6
+                                  ? 'Le mot de passe doit contenir au moins 6 caractères.'
                                   : null,
                             ),
                             if (_errorMessage != null) ...[
@@ -196,7 +306,7 @@ class _LoginPageState extends State<LoginPage> {
                               width: double.infinity,
                               height: 54,
                               child: FilledButton(
-                                onPressed: _signIn,
+                                onPressed: _isLoading ? null : _submit,
                                 style: FilledButton.styleFrom(
                                   backgroundColor: _blue,
                                   foregroundColor: Colors.white,
@@ -205,19 +315,54 @@ class _LoginPageState extends State<LoginPage> {
                                   ),
                                   elevation: 0,
                                 ),
-                                child: const Row(
+                                child: Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Text(
-                                      'Se connecter',
-                                      style: TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w700,
+                                    if (_isLoading)
+                                      const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    else
+                                      Text(
+                                        _isRegistering
+                                            ? 'Créer mon compte'
+                                            : 'Se connecter',
+                                        style: const TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w700,
+                                        ),
                                       ),
+                                    const SizedBox(width: 9),
+                                    const Icon(
+                                      Icons.arrow_forward_rounded,
+                                      size: 19,
                                     ),
-                                    SizedBox(width: 9),
-                                    Icon(Icons.arrow_forward_rounded, size: 19),
                                   ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Center(
+                              child: TextButton(
+                                onPressed: _isLoading
+                                    ? null
+                                    : () => setState(() {
+                                        _isRegistering = !_isRegistering;
+                                        _errorMessage = null;
+                                      }),
+                                child: Text(
+                                  _isRegistering
+                                      ? 'J’ai déjà un compte'
+                                      : 'Créer un compte',
+                                  style: const TextStyle(
+                                    color: _blue,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                 ),
                               ),
                             ),
@@ -225,8 +370,8 @@ class _LoginPageState extends State<LoginPage> {
                             Center(
                               child: Text(
                                 //'Démo : precious  ·  1234',//'
-                                ''
-                               , style: TextStyle(
+                                '',
+                                style: TextStyle(
                                   color: _muted.withValues(alpha: 0.9),
                                   fontSize: 12,
                                 ),
@@ -337,10 +482,7 @@ class _PortfolioShellState extends State<PortfolioShell> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  'CV personnel',
-                  style: TextStyle(color: _muted),
-                ),
+                const Text('CV personnel', style: TextStyle(color: _muted)),
                 const SizedBox(height: 24),
                 const Divider(indent: 22, endIndent: 22),
                 for (var index = 0; index < _titles.length; index++)
@@ -672,113 +814,247 @@ class ResumePage extends StatelessWidget {
   }
 }
 
-class FamilyPage extends StatelessWidget {
+class FamilyPage extends StatefulWidget {
   const FamilyPage({super.key});
 
-  static const _members = [
-    _FamilyMember(
-      name: 'Antoine MUHINDO',
-      relationship: 'Père',
-      profession: "Agent de l'Etat",
-      photoUrl: 'assets/images/PHOTO PAPA.jpg',
-      initials: 'P',
-      tint: Color(0xFFE7EAFE),
-    ),
-    _FamilyMember(
-      name: 'Rachel MaTATA',
-      relationship: 'Mère',
-      profession: 'Commercante',
-      photoUrl: 'assets/images/PHOTO MAMAN.jpg',
-      initials: 'M',
-      tint: Color(0xFFF8E8F0),
-    ),
-    _FamilyMember(
-      name: 'Prince KUBUYA',
-      relationship: 'Frère ',
-      profession: 'Étudiant',
-      photoUrl: 'assets/images/Photo Prince.jpg',
-      initials: 'M',
-      tint: Color.fromARGB(255, 109, 141, 168),
-    ),
-     _FamilyMember(
-      name: 'Florence BUHOLO',
-      relationship: 'Frère ',
-      profession: 'Étudiant',
-      photoUrl: 'assets/images/Photo Prince.jpg',
-      initials: 'F',
-      tint: Color.fromARGB(255, 137, 212, 186),
-    ),
-  ];
+  @override
+  State<FamilyPage> createState() => _FamilyPageState();
+}
+
+class _FamilyPageState extends State<FamilyPage> {
+  List<_FamilyMember> _members = [];
+  bool _isLoading = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMembers();
+  }
+
+  Future<void> _loadMembers() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final response = await apiRequest('GET', '/famille-membres');
+      final data = response['data'];
+      final list = data is List
+          ? data
+          : data is Map
+          ? (data['data'] as List? ?? const [])
+          : const [];
+      if (!mounted) return;
+      setState(() {
+        _members = list
+            .whereType<Map>()
+            .map(
+              (item) => _FamilyMember.fromJson(Map<String, dynamic>.from(item)),
+            )
+            .toList();
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error is ApiException
+            ? error.message
+            : 'Impossible de charger les membres.';
+      });
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _deleteMember(_FamilyMember member) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Supprimer ce membre'),
+        content: Text('Voulez-vous supprimer ${member.fullName} ?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFB34353),
+            ),
+            child: const Text('Supprimer'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await apiRequest('DELETE', '/famille-membres/${member.id}');
+      await _loadMembers();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Membre supprimé')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error is ApiException
+                ? error.message
+                : 'Impossible de supprimer le membre.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showMemberForm({_FamilyMember? member}) async {
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) =>
+          _FamilyMemberForm(member: member, onSaved: () => _loadMembers()),
+    );
+    if (saved == true) await _loadMembers();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-      children: [
-        const Text(
-          'Les personnes qui comptent',
-          style: TextStyle(
-            color: _ink,
-            fontSize: 23,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.6,
+    return RefreshIndicator(
+      onRefresh: _loadMembers,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+        children: [
+          const Text(
+            'Les personnes qui comptent',
+            style: TextStyle(
+              color: _ink,
+              fontSize: 23,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.6,
+            ),
           ),
-        ),
-        const SizedBox(height: 7),
-        const Text(
-          'Ma famille est une source précieuse de soutien et d’inspiration.',
-          style: TextStyle(color: _muted, height: 1.5),
-        ),
-        const SizedBox(height: 19),
-        for (final member in _members) ...[
-          _FamilyCard(member: member),
-          const SizedBox(height: 12),
-        ],
-        const GlassPanel(
-          padding: EdgeInsets.all(17),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.edit_note_rounded, color: _blue, size: 22),
-              SizedBox(width: 11),
-              Expanded(
-                child: Text(
-                 // 'Remplacez les noms, photos et professions par les '
-                 // 'informations que vous souhaitez partager.',
-                 '',
-                  style: TextStyle(color: _muted, fontSize: 13, height: 1.5),
+          const SizedBox(height: 7),
+          const Text(
+            'Ma famille est enregistrée dynamiquement dans la base de données.',
+            style: TextStyle(color: _muted, height: 1.5),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            height: 48,
+            child: FilledButton.icon(
+              onPressed: () => _showMemberForm(),
+              icon: const Icon(Icons.person_add_alt_1_rounded),
+              label: const Text('Ajouter un membre'),
+              style: FilledButton.styleFrom(
+                backgroundColor: _blue,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(15),
                 ),
               ),
-            ],
+            ),
           ),
-        ),
-      ],
+          const SizedBox(height: 16),
+          if (_isLoading)
+            const Padding(
+              padding: EdgeInsets.only(top: 50),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_errorMessage != null)
+            GlassPanel(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                children: [
+                  const Icon(Icons.cloud_off_rounded, color: _muted, size: 36),
+                  const SizedBox(height: 10),
+                  Text(
+                    _errorMessage!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: _muted),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _loadMembers,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Réessayer'),
+                  ),
+                ],
+              ),
+            )
+          else if (_members.isEmpty)
+            const GlassPanel(
+              padding: EdgeInsets.all(18),
+              child: Text(
+                'Aucun membre enregistré pour le moment.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _muted),
+              ),
+            )
+          else
+            for (final member in _members) ...[
+              _FamilyCard(
+                member: member,
+                onEdit: () => _showMemberForm(member: member),
+                onDelete: () => _deleteMember(member),
+              ),
+              const SizedBox(height: 12),
+            ],
+        ],
+      ),
     );
   }
 }
 
 class _FamilyMember {
   const _FamilyMember({
-    required this.name,
+    required this.id,
+    required this.nom,
+    required this.postnom,
+    required this.prenom,
+    required this.lieuNaissance,
+    required this.dateNaissance,
     required this.relationship,
-    required this.profession,
-    required this.photoUrl,
-    required this.initials,
-    required this.tint,
+    required this.imageUrl,
   });
 
-  final String name;
+  factory _FamilyMember.fromJson(Map<String, dynamic> json) {
+    return _FamilyMember(
+      id: int.tryParse(json['id'].toString()) ?? 0,
+      nom: json['nom']?.toString() ?? '',
+      postnom: json['postnom']?.toString() ?? '',
+      prenom: json['prenom']?.toString() ?? '',
+      lieuNaissance: json['lieu_naissance']?.toString() ?? '',
+      dateNaissance: json['date_naissance']?.toString() ?? '',
+      relationship: json['parente']?.toString() ?? '',
+      imageUrl: json['image_url']?.toString(),
+    );
+  }
+
+  final int id;
+  final String nom;
+  final String postnom;
+  final String prenom;
+  final String lieuNaissance;
+  final String dateNaissance;
   final String relationship;
-  final String profession;
-  final String photoUrl;
-  final String initials;
-  final Color tint;
+  final String? imageUrl;
+
+  String get fullName => '$prenom $postnom $nom'.replaceAll('  ', ' ').trim();
+  String get initials => prenom.isNotEmpty ? prenom[0].toUpperCase() : '?';
 }
 
 class _FamilyCard extends StatelessWidget {
-  const _FamilyCard({required this.member});
+  const _FamilyCard({
+    required this.member,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   final _FamilyMember member;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -788,26 +1064,41 @@ class _FamilyCard extends StatelessWidget {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(19),
-            child: Image.network(
-              member.photoUrl,
-              width: 76,
-              height: 76,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => Container(
-                width: 76,
-                height: 76,
-                alignment: Alignment.center,
-                color: member.tint,
-                child: Text(
-                  member.initials,
-                  style: const TextStyle(
-                    color: _blue,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 25,
+            child: member.imageUrl == null || member.imageUrl!.isEmpty
+                ? Container(
+                    width: 76,
+                    height: 76,
+                    alignment: Alignment.center,
+                    color: const Color(0xFFE7EAFE),
+                    child: Text(
+                      member.initials,
+                      style: const TextStyle(
+                        color: _blue,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 25,
+                      ),
+                    ),
+                  )
+                : Image.network(
+                    _normalizeImageUrl(member.imageUrl!),
+                    width: 76,
+                    height: 76,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      width: 76,
+                      height: 76,
+                      alignment: Alignment.center,
+                      color: const Color(0xFFE7EAFE),
+                      child: Text(
+                        member.initials,
+                        style: const TextStyle(
+                          color: _blue,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 25,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ),
           ),
           const SizedBox(width: 15),
           Expanded(
@@ -825,7 +1116,7 @@ class _FamilyCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 5),
                 Text(
-                  member.name,
+                  member.fullName,
                   style: const TextStyle(
                     color: _ink,
                     fontWeight: FontWeight.w700,
@@ -834,18 +1125,252 @@ class _FamilyCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  member.profession,
+                  '${member.lieuNaissance} · ${member.dateNaissance}',
                   style: const TextStyle(color: _muted, fontSize: 12),
                 ),
               ],
             ),
           ),
-          Icon(
-            Icons.favorite_rounded,
-            size: 17,
-            color: const Color(0xFFEA91A2).withValues(alpha: 0.8),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'Modifier',
+                onPressed: onEdit,
+                icon: const Icon(Icons.edit_outlined, color: _blue),
+              ),
+              IconButton(
+                tooltip: 'Supprimer',
+                onPressed: onDelete,
+                icon: const Icon(
+                  Icons.delete_outline_rounded,
+                  color: Color(0xFFB34353),
+                ),
+              ),
+            ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+String _normalizeImageUrl(String url) {
+  final imageUri = Uri.tryParse(url);
+  final apiUri = Uri.tryParse(_apiBaseUrl);
+  if (imageUri == null || apiUri == null) return url;
+  if (imageUri.host == 'localhost' || imageUri.host == '127.0.0.1') {
+    return imageUri
+        .replace(host: apiUri.host, port: apiUri.hasPort ? apiUri.port : null)
+        .toString();
+  }
+  return url;
+}
+
+class _FamilyMemberForm extends StatefulWidget {
+  const _FamilyMemberForm({required this.onSaved, this.member});
+
+  final _FamilyMember? member;
+  final Future<void> Function() onSaved;
+
+  @override
+  State<_FamilyMemberForm> createState() => _FamilyMemberFormState();
+}
+
+class _FamilyMemberFormState extends State<_FamilyMemberForm> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nom;
+  late final TextEditingController _postnom;
+  late final TextEditingController _prenom;
+  late final TextEditingController _lieu;
+  late final TextEditingController _date;
+  late final TextEditingController _parente;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final member = widget.member;
+    _nom = TextEditingController(text: member?.nom);
+    _postnom = TextEditingController(text: member?.postnom);
+    _prenom = TextEditingController(text: member?.prenom);
+    _lieu = TextEditingController(text: member?.lieuNaissance);
+    _date = TextEditingController(text: member?.dateNaissance);
+    _parente = TextEditingController(text: member?.relationship);
+  }
+
+  @override
+  void dispose() {
+    _nom.dispose();
+    _postnom.dispose();
+    _prenom.dispose();
+    _lieu.dispose();
+    _date.dispose();
+    _parente.dispose();
+    super.dispose();
+  }
+
+  Future<void> _chooseDate() async {
+    final initial = DateTime.tryParse(_date.text) ?? DateTime(2000);
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+    );
+    if (selected != null) {
+      _date.text =
+          '${selected.year.toString().padLeft(4, '0')}-${selected.month.toString().padLeft(2, '0')}-${selected.day.toString().padLeft(2, '0')}';
+    }
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _isSaving = true);
+    final body = {
+      'nom': _nom.text.trim(),
+      'postnom': _postnom.text.trim(),
+      'prenom': _prenom.text.trim(),
+      'lieu_naissance': _lieu.text.trim(),
+      'date_naissance': _date.text.trim(),
+      'parente': _parente.text.trim(),
+    };
+
+    try {
+      if (widget.member == null) {
+        await apiRequest('POST', '/famille-membres', body: body);
+      } else {
+        await apiRequest(
+          'PUT',
+          '/famille-membres/${widget.member!.id}',
+          body: body,
+        );
+      }
+      await widget.onSaved();
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error is ApiException
+                ? error.message
+                : 'Impossible d’enregistrer le membre.',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Widget _field(
+    String label,
+    TextEditingController controller, {
+    IconData icon = Icons.person_outline_rounded,
+  }) {
+    return TextFormField(
+      controller: controller,
+      decoration: _inputDecoration(hint: label, icon: icon),
+      validator: (value) => value == null || value.trim().isEmpty
+          ? 'Ce champ est obligatoire.'
+          : null,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final editing = widget.member != null;
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: GlassPanel(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+        radius: 24,
+        child: Form(
+          key: _formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        editing ? 'Modifier le membre' : 'Ajouter un membre',
+                        style: const TextStyle(
+                          color: _ink,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _field('Nom', _nom),
+                const SizedBox(height: 10),
+                _field('Postnom', _postnom),
+                const SizedBox(height: 10),
+                _field('Prénom', _prenom),
+                const SizedBox(height: 10),
+                _field(
+                  'Lieu de naissance',
+                  _lieu,
+                  icon: Icons.location_on_outlined,
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _date,
+                  readOnly: true,
+                  onTap: _chooseDate,
+                  decoration: _inputDecoration(
+                    hint: 'Date de naissance',
+                    icon: Icons.calendar_today_outlined,
+                  ),
+                  validator: (value) => value == null || value.isEmpty
+                      ? 'Choisissez une date.'
+                      : null,
+                ),
+                const SizedBox(height: 10),
+                _field(
+                  'Parenté (Père, Mère, Frère…)',
+                  _parente,
+                  icon: Icons.family_restroom_rounded,
+                ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: FilledButton(
+                    onPressed: _isSaving ? null : _save,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _blue,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                    ),
+                    child: _isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Text(editing ? 'Enregistrer' : 'Ajouter'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
